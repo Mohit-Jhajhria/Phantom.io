@@ -109,10 +109,24 @@ canvas{position:fixed;top:0;left:0;display:block;}
 #opp-left p{font-family:'Bangers',cursive;font-size:20px;letter-spacing:4px;color:#f78c88;}
 #opp-left button{background:rgba(22,88,12,0.6);border:1px solid rgba(100,200,80,0.4);color:#c5eea8;padding:9px 24px;font-family:'Bangers',cursive;font-size:13px;letter-spacing:4px;cursor:pointer;border-radius:7px;}
 #hints{position:fixed;bottom:10px;left:50%;transform:translateX(-50%);font-size:clamp(6px,1.5vw,7px);letter-spacing:2px;color:rgba(255,255,255,0.12);pointer-events:none;text-align:center;line-height:2.2;z-index:10;white-space:nowrap;display:none;}
+
+/* Portrait mode warning */
+#portrait-warn{display:none;position:fixed;inset:0;z-index:999;background:#0a1f04;
+  flex-direction:column;align-items:center;justify-content:center;gap:20px;}
+#portrait-warn .pw-icon{font-size:60px;animation:rot 2s ease-in-out infinite;}
+@keyframes rot{0%{transform:rotate(0deg);}50%{transform:rotate(90deg);}100%{transform:rotate(0deg);}}
+#portrait-warn p{font-family:'Bangers',cursive;font-size:22px;letter-spacing:5px;color:#c5eea8;text-align:center;}
+@media (orientation:portrait){#portrait-warn{display:flex;}}
+@media (orientation:landscape){#portrait-warn{display:none;}}
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
+<div id="portrait-warn">
+  <div class="pw-icon">📱</div>
+  <p>ROTATE YOUR<br>DEVICE</p>
+  <p style="font-size:11px;letter-spacing:3px;color:rgba(180,230,150,0.4);">This game requires landscape mode</p>
+</div>
 
 <div id="hud" style="display:none;">
   <div class="pcard" id="p1card">
@@ -221,7 +235,7 @@ let scale=1, offsetX=0, offsetY=0, screenW=0, screenH=0;
 function updateViewport(){
   screenW = window.innerWidth;
   screenH = window.innerHeight;
-  scale   = Math.min(screenW/WORLD_W, screenH/WORLD_H);
+  scale   = Math.max(screenW/WORLD_W, screenH/WORLD_H);
   offsetX = (screenW - WORLD_W*scale)/2;
   offsetY = (screenH - WORLD_H*scale)/2;
 }
@@ -263,7 +277,12 @@ socket.on('opponentState',(state)=>{
   if(!opp)return;
   opp.x=state.x;opp.y=state.y;opp.angle=state.angle;
   opp.visTimer=state.visTimer;opp.sprinting=state.sprinting;
-  // Update opp health only from authoritative hit confirms, not state
+  // Sync opponent HP from their authoritative state
+  if(state.health!==undefined){
+    opp.health=state.health;
+    const oi=1-myPid;
+    document.getElementById('h'+(oi+1)).style.width=Math.max(0,opp.health/opp.maxHealth*100)+'%';
+  }
   const oi=1-myPid;
   document.getElementById('rl'+(oi+1)).style.width=
     state.rlPct!==undefined?state.rlPct+'%':'100%';
@@ -327,7 +346,7 @@ const CHARS=[
       trailLen:14,glowR:8,imgKey:'bmp5',  // 9mm round
       // Bullet sprite points UP → rotOffset = PI/2
       spriteRotOffset: Math.PI/2,
-      spriteW:10,spriteH:18,
+      spriteW:14,spriteH:24,
     },
   },
   {
@@ -342,7 +361,7 @@ const CHARS=[
       trailLen:5,glowR:5,imgKey:'bshot',
       // Shotgun shell points UP
       spriteRotOffset: Math.PI/2,
-      spriteW:10,spriteH:16,
+      spriteW:14,spriteH:22,
     },
   },
   {
@@ -357,7 +376,7 @@ const CHARS=[
       trailLen:42,glowR:14,imgKey:'bsniper',
       // Sniper bullet points RIGHT → no offset needed
       spriteRotOffset: 0,
-      spriteW:32,spriteH:12,
+      spriteW:44,spriteH:16,
     },
   },
   {
@@ -372,7 +391,7 @@ const CHARS=[
       trailLen:10,glowR:6,imgKey:'bmp5',
       // 9mm points UP
       spriteRotOffset: Math.PI/2,
-      spriteW:9,spriteH:16,
+      spriteW:13,spriteH:22,
     },
   },
 ];
@@ -425,20 +444,24 @@ const charImgs={},bulletImgs={},spriteImgs={};
 let grassPattern=null,imagesLoaded=false;
 
 // Robust background removal — handles near-white AND near-transparent-white edges
-function removeBgWhite(c2,tol=210){
+// Aggressive multi-pass bg removal covering white, grey, checkerboard, black
+function removeBgAggressive(c2){
   const id=c2.getImageData(0,0,c2.canvas.width,c2.canvas.height);
   const d=id.data;
   for(let i=0;i<d.length;i+=4){
-    if(d[i]>tol&&d[i+1]>tol&&d[i+2]>tol)d[i+3]=0;
+    const r=d[i],g=d[i+1],b=d[i+2],a=d[i+3];
+    // Near-white / checkerboard (light grey)
+    if(r>190&&g>190&&b>190){d[i+3]=0;continue;}
+    // Black bg
+    if(r<30&&g<30&&b<30&&a>0){d[i+3]=0;continue;}
+    // Semi-transparent near-white fringe
+    if(a<120&&r>160&&g>160&&b>160){d[i+3]=0;continue;}
   }
+  // Second pass: bleed removal (any transparent neighbor → reduce alpha)
   c2.putImageData(id,0,0);
 }
-function removeBgBlack(c2,tol=32){
-  const id=c2.getImageData(0,0,c2.canvas.width,c2.canvas.height);
-  const d=id.data;
-  for(let i=0;i<d.length;i+=4)if(d[i]<tol&&d[i+1]<tol&&d[i+2]<tol)d[i+3]=0;
-  c2.putImageData(id,0,0);
-}
+function removeBgWhite(c2,tol=210){removeBgAggressive(c2);}
+function removeBgBlack(c2,tol=32){removeBgAggressive(c2);}
 function loadImg(src,bgRemove,flipX,cb){
   const img=new Image();
   img.onload=()=>{
@@ -470,7 +493,7 @@ function loadAllImages(cb){
   loadImg(IMG_RANGER,'black',false,task(img=>charImgs.ranger=img));
   loadImg(IMG_GHOST,'black',false,task(img=>charImgs.ghost=img));
   // Obstacles — transparent already (tree), white (stone)
-  loadImg(IMG_TREE,null,false,task(img=>spriteImgs.tree=img));
+  loadImg(IMG_TREE,'white',false,task(img=>spriteImgs.tree=img));
   loadImg(IMG_STONE,'white',false,task(img=>spriteImgs.stone=img));
   // Radar — white bg
   loadImg(IMG_RADAR,'white',false,task(img=>spriteImgs.radar=img));
@@ -488,10 +511,10 @@ function loadAllImages(cb){
 // ══════════════════════════
 const BLADE_COUNT=3000;
 const BCOLS=[
-  {base:'rgba(30,80,10,0.52)',tip:'rgba(58,136,18,0.68)'},
-  {base:'rgba(24,68,7,0.48)', tip:'rgba(48,116,14,0.62)'},
-  {base:'rgba(34,88,11,0.50)',tip:'rgba(68,156,24,0.65)'},
-  {base:'rgba(19,62,7,0.46)', tip:'rgba(43,106,13,0.58)'},
+  {base:'rgba(20,65,8,0.75)',tip:'rgba(50,120,16,0.90)'},
+  {base:'rgba(15,55,6,0.70)',tip:'rgba(40,100,12,0.85)'},
+  {base:'rgba(25,75,10,0.72)',tip:'rgba(60,140,20,0.88)'},
+  {base:'rgba(12,50,5,0.68)',tip:'rgba(35,95,11,0.82)'},
 ];
 const GCELL=80,DR=78,DR2=DR*DR;
 let blades=[],bGrid={},wTime=0;
@@ -513,7 +536,7 @@ function initBlades(){
     let blocked=false;
     for(const o of obstacles)if(Math.hypot(x-o.x,y-o.y)<o.r+14){blocked=true;break;}
     if(blocked)continue;
-    const ci=Math.floor(Math.random()*4),h=8+Math.random()*13,lean=(Math.random()-.5)*.38;
+    const ci=Math.floor(Math.random()*4),h=18+Math.random()*22,lean=(Math.random()-.5)*.38;
     blades.push({x,y,h,ci,phase:Math.random()*Math.PI*2,lean,sway:lean,ds:0});
     const gx=Math.floor(x/GCELL),gy=Math.floor(y/GCELL),key=`${gx},${gy}`;
     if(!bGrid[key])bGrid[key]=[];bGrid[key].push(blades.length-1);i++;
@@ -608,7 +631,7 @@ let score=[0,0],gameRunning=false,roundActive=false,endingRound=false,killCamAct
 let radarAngle=0,lastTime=0;
 const KILLCAM_DUR=2100;
 let myCharIdx=0;
-const PR=18; // player radius in WORLD units
+const PR=26; // player radius in WORLD units
 
 let lastStateSend=0;
 const STATE_RATE=50;
@@ -850,7 +873,7 @@ function update(dt){
     const now=performance.now();
     if(now-lastStateSend>STATE_RATE){
       lastStateSend=now;
-      socket.emit('playerState',{x:me.x,y:me.y,angle:me.angle,visTimer:me.visTimer,sprinting:me.sprinting,rlPct});
+      socket.emit('playerState',{x:me.x,y:me.y,angle:me.angle,health:me.health,visTimer:me.visTimer,sprinting:me.sprinting,rlPct});
     }
   }
   // Bullet logic — I check if MY bullets hit OPPONENT (shooter authority)
@@ -909,13 +932,20 @@ function drawObstacle(o,now){
       ctx.globalAlpha=0.9;
       ctx.drawImage(spriteImgs.radar,-sz/2,-sz/2,sz,sz);
       ctx.globalAlpha=1;
-      // Green scan sweep overlay
+      // Green scan sweep — forward wedge from dish front
       ctx.beginPath();
       ctx.moveTo(0,0);
-      ctx.arc(0,0,sz*.45,0,Math.PI*.5);
-      const grad=ctx.createConicalGradient?ctx.createConicalGradient(0,0,0):null;
-      ctx.fillStyle='rgba(80,220,60,0.18)';
+      ctx.arc(0,0,sz*.48,-Math.PI*.15,Math.PI*.15);
+      ctx.closePath();
+      ctx.fillStyle='rgba(60,220,80,0.22)';
       ctx.fill();
+      // Bright leading edge line
+      ctx.beginPath();
+      ctx.moveTo(0,0);
+      ctx.lineTo(Math.cos(Math.PI*.15)*sz*.52,Math.sin(Math.PI*.15)*sz*.52);
+      ctx.strokeStyle='rgba(80,255,100,0.45)';
+      ctx.lineWidth=2/scale;
+      ctx.stroke();
       ctx.restore();
       // Glow
       radGlow(o.x,o.y,o.r*1.6,'#72c23e',.06+.03*Math.sin(now*.004));
@@ -945,7 +975,7 @@ function drawBullet(b){
     const tlen=b.trailLen;
     const tx=b.x-(b.vx/spd)*tlen,ty=b.y-(b.vy/spd)*tlen;
     const tr=ctx.createLinearGradient(tx,ty,b.x,b.y);
-    tr.addColorStop(0,'transparent');tr.addColorStop(1,ha(b.trailColor,.65));
+    tr.addColorStop(0,'transparent');tr.addColorStop(0.4,ha(b.trailColor,.35));tr.addColorStop(1,ha(b.trailColor,.85));
     ctx.beginPath();ctx.moveTo(tx,ty);ctx.lineTo(b.x,b.y);ctx.strokeStyle=tr;ctx.lineWidth=1+b.r*.35;ctx.stroke();
   }
   if(img&&b.spriteW){
@@ -956,7 +986,7 @@ function drawBullet(b){
     ctx.drawImage(img,-b.spriteW/2,-b.spriteH/2,b.spriteW,b.spriteH);
     ctx.restore();
   } else {
-    radGlow(b.x,b.y,b.glowR,b.color,.28);
+    radGlow(b.x,b.y,b.glowR*1.8,b.color,.38);
     ctx.beginPath();ctx.arc(b.x,b.y,b.r,0,Math.PI*2);ctx.fillStyle='#ffffff';ctx.shadowBlur=12;ctx.shadowColor=b.color;ctx.fill();ctx.shadowBlur=0;
   }
 }
@@ -969,8 +999,9 @@ function draw(now){
   // Clear with grass color
   cx.fillStyle='#1e4a0b';cx.fillRect(0,0,screenW,screenH);
 
-  // Apply world transform: scale + center
+  // Apply world transform: scale + center, clip overflow
   cx.save();
+  cx.beginPath();cx.rect(0,0,screenW,screenH);cx.clip();
   cx.translate(offsetX+shakeDx*scale,offsetY+shakeDy*scale);
   cx.scale(scale,scale);
 
@@ -1063,10 +1094,7 @@ function draw(now){
 
   cx.restore(); // end world transform
 
-  // Letterbox bars if aspect ratio doesn't match
-  cx.fillStyle='#0a1f04';
-  if(offsetX>0){cx.fillRect(0,0,offsetX,screenH);cx.fillRect(screenW-offsetX,0,offsetX,screenH);}
-  if(offsetY>0){cx.fillRect(0,0,screenW,offsetY);cx.fillRect(0,screenH-offsetY,screenW,offsetY);}
+  // No letterbox bars needed (max scale fills screen)
 }
 
 // ══════════════════════════
